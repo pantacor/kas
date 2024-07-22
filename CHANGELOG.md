@@ -1,3 +1,7 @@
+4.3.2-pv
+Alexander Sack (1):
+      kconfig: add support for KAS_LOCAL_ to allow to enable custom local.conf lines by choice
+
 4.3.2
 - kas: don't add comments to .netrc, fixing gitlab-ci
 - kas: make file permissions on credentials more strict (not a security fix)
