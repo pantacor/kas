@@ -243,7 +243,7 @@ class Menu:
                     f'{local}'
                     for local in kas_local
                 )
-             }
+            }
 
         logging.debug('Menu configuration:\n%s', pprint.pformat(config))
 
