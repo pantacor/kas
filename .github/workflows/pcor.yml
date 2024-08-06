@@ -1,0 +1,108 @@
+name: pcor
+
+on:
+  push:
+    branches:
+      - pcor
+
+env:
+  SHELLCHECK_VERSION: v0.7.1
+  SHELLCHECK_SHA256: 64f17152d96d7ec261ad3086ed42d18232fcb65148b44571b564d688269d36c8
+  NEWT_VERSION: 0.52.21
+  NEWT_SHA256: 265eb46b55d7eaeb887fca7a1d51fe115658882dfe148164b6c49fccac5abb31
+
+jobs:
+  perform_tests:
+    name: Run tests on kas code
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        python-version: ["3.6", "3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+      - name: Install Python dependencies of kas and tests
+        run: |
+          # install kas to have all kas dependencies:
+          pip install .
+          # checkcode dependencies:
+          pip install flake8 pycodestyle doc8 Pygments
+          # test dependencies:
+          pip install -U pytest
+      - name: Install recent shellcheck
+        run: |
+          wget -q https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz
+          echo "$SHELLCHECK_SHA256 shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz" | sha256sum -c
+          tar -xJf shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz
+          sudo cp shellcheck-$SHELLCHECK_VERSION/shellcheck /usr/local/bin/
+      - name: Install python-newt
+        run: |
+          sudo apt-get update
+          sudo apt-get install libpopt-dev libslang2-dev
+          wget -q https://releases.pagure.org/newt/newt-$NEWT_VERSION.tar.gz
+          echo "$NEWT_SHA256 newt-$NEWT_VERSION.tar.gz" | sha256sum -c
+          tar -C /tmp -xzf newt-$NEWT_VERSION.tar.gz
+          cd /tmp/newt-$NEWT_VERSION
+          autoconf
+          ./configure --with-python=python${{ matrix.python-version }}
+          make -j $(nproc)
+          sudo make install
+          ln -s /usr/local/lib/python${{ matrix.python-version }}/site-packages/_snack.so \
+                $(python3 -c 'import site; print(site.getsitepackages()[0])')/
+          ln -s /usr/local/lib/python${{ matrix.python-version }}/site-packages/snack.py \
+                $(python3 -c 'import site; print(site.getsitepackages()[0])')/
+      - name: Run tests
+        run: |
+          scripts/checkcode.sh .
+          TERM=xterm pytest
+
+  build_containers:
+    name: Build, test and deploy container images
+    needs: perform_tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image-name: ["kas", "kas-isar"]
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up docker build
+        uses: ./.github/actions/docker-init
+        with:
+          deploy-user: ${{ github.actor }}
+          deploy-token: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ matrix.image-name }}
+
+      - name: Build ${{ matrix.image-name }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: /home/runner/kas-clone
+          target: ${{ matrix.image-name }}
+          platforms: linux/amd64
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            DEBIAN_TAG=${{ env.DEBIAN_TAG }}
+          outputs: type=docker,rewrite-timestamp=true
+          tags: ghcr.io/pantacor/kas/${{ matrix.image-name }}:pcor
+      - name: Test ${{ matrix.image-name }} image
+        run: |
+          cd image-tests/${{ matrix.image-name }}
+          KAS_IMAGE_VERSION=pcor ../../kas-container build kas.yml
+      - name: Complete build and deploy ${{ matrix.image-name }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: /home/runner/kas-clone
+          target: ${{ matrix.image-name }}
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            DEBIAN_TAG=${{ env.DEBIAN_TAG }}
+          provenance: mode=max,reproducible=true
+          outputs: type=registry,rewrite-timestamp=true
+          tags: ghcr.io/pantacor/kas/${{ matrix.image-name }}:pcor
+          annotations: ${{ env.DOCKER_METADATA_OUTPUT_ANNOTATIONS }}
